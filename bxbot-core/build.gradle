@@ -1,0 +1,45 @@
+description = 'BX-bot Core'
+
+dependencies {
+
+  implementation project(':bxbot-domain-objects')
+  implementation project(':bxbot-services')
+  implementation project(':bxbot-trading-api')
+  implementation project(':bxbot-exchange-api')
+  implementation project(':bxbot-strategy-api')
+  implementation project(':bxbot-exchanges')
+  implementation project(':bxbot-strategies')
+
+  implementation libraries.spring_boot_starter
+  implementation libraries.spring_boot_starter_log4j2
+  implementation libraries.google_guava
+
+  implementation libraries.jakarta_mail_api
+  implementation libraries.jakarta_mail_sun
+
+  implementation libraries.springdoc_openapi_ui
+
+  compileOnly libraries.lombok
+  annotationProcessor libraries.lombok
+
+  testImplementation libraries.easymock
+  testImplementation libraries.spring_boot_starter_test
+  testImplementation libraries.awaitility
+}
+
+jacocoTestCoverageVerification {
+  violationRules {
+    rule {
+      element = 'CLASS'
+      excludes = [
+          'com.gazbert.bxbot.core.mail.EmailAlerter*', // Needs static mocking of Transport layer
+          'com.gazbert.bxbot.BxBot',                   // Nothing to test
+      ]
+      limit {
+        counter = 'LINE'
+        value = 'COVEREDRATIO'
+        minimum = 0.8
+      }
+    }
+  }
+}

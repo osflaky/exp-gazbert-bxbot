@@ -1,0 +1,53 @@
+/*
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2015 Gareth Jon Lynch
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+package com.gazbert.bxbot.exchanges.trading.api.impl;
+
+import com.gazbert.bxbot.trading.api.BalanceInfo;
+import java.math.BigDecimal;
+import java.util.Map;
+import lombok.Data;
+
+/**
+ * A BalanceInfo implementation that can be used by Exchange Adapters.
+ *
+ * @author gazbert
+ */
+@Data
+public final class BalanceInfoImpl implements BalanceInfo {
+
+  private Map<String, BigDecimal> balancesAvailable;
+  private Map<String, BigDecimal> balancesOnHold;
+
+  /**
+   * Creates a Balance Info.
+   *
+   * @param balancesAvailable the balances available.
+   * @param balancesOnHold the balances on hold.
+   */
+  public BalanceInfoImpl(
+      Map<String, BigDecimal> balancesAvailable, Map<String, BigDecimal> balancesOnHold) {
+    this.balancesAvailable = balancesAvailable;
+    this.balancesOnHold = balancesOnHold;
+  }
+}

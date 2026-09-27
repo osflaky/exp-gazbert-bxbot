@@ -1,0 +1,78 @@
+############################################################################################
+# Exchange Adapter YAML config.
+#
+# - All fields are mandatory unless stated otherwise.
+# - BX-bot only supports running 1 exchange per bot.
+# - Sample config below is using the dry-run/paper trading TryModeExchangeAdapter - it's configured to delegate to the BitstampExchangeAdapter.
+# - The indentation levels are significant in YAML: https://en.wikipedia.org/wiki/YAML
+#
+# See the README "How do I write my own Exchange Adapter?" section for more details.
+############################################################################################
+---
+exchange:
+
+  # A friendly name for the Exchange. Value must be an alphanumeric string. Spaces are allowed.
+  name: Try-Mode ExchangeAdapter
+
+  # For the adapter value, you must specify the fully qualified name of your Exchange Adapter class so the Trading Engine
+  # can load and execute it. The class must be on the runtime classpath.
+  adapter: com.gazbert.bxbot.exchanges.TryModeExchangeAdapter
+
+  authenticationConfig:
+    # Add your Exchange trading API credentials here.
+    # This example is for the TryModeExchangeAdapter delegating to Bitstamp. See https://www.bitstamp.net/api/ - API Authentication.
+    client-id: your-client-id
+    key: your-api-key
+    secret: your-secret-key
+
+  networkConfig:
+    # This value is in SECONDS. It is the timeout value that the exchange adapter will wait on socket connect/socket read
+    # when communicating with the exchange. Once this threshold has been breached, the exchange adapter will give up and
+    # throw a Trading API TimeoutException.
+    #
+    # The exchange adapter is single threaded: if one request gets blocked, it will block all subsequent requests from
+    # getting to the exchange. This timeout prevents an indefinite block.
+    #
+    # You'll need to experiment with values here.
+    connectionTimeout: 30
+
+    # Optional HTTP status codes that will trigger the adapter to throw a non-fatal ExchangeNetworkException
+    # if the exchange returns any of the below in an API call response:
+    nonFatalErrorCodes: [502, 503, 504, 520, 522, 525]
+
+    # Optional java.io exception messages that will trigger the adapter to throw a non-fatal ExchangeNetworkException
+    # if the exchange returns any of the below in an API call response:
+    nonFatalErrorMessages:
+      - Connection reset
+      - Connection refused
+      - Remote host closed connection during handshake
+      - Unexpected end of file from server
+
+  # Other config for adapter - it's not mandatory.
+  # It's included here to show example usage with the dry-run/paper trading TryModeExchangeAdapter.
+  # The config values have been configured for Bitstamp.
+  otherConfig:
+
+    # The counter currency which is being simulated. This must match your chosen market counter currency.
+    simulatedCounterCurrency: USD
+
+    # The starting balance for the simulation. The simulation starts with this amount for counter currency.
+    simulatedCounterCurrencyStartingBalance: 100
+
+    # The base currency which is simulated. This must match your chosen market base currency.
+    simulatedBaseCurrency: BTC
+
+    # The starting balance for the simulation. The simulation starts with this amount for base currency.
+    simulatedBaseCurrencyStartingBalance: 2
+
+    # The exchange sell fee percentage for the simulation.
+    simulatedSellFee: 0.1
+
+    # The exchange buy fee percentage for the simulation.
+    simulatedBuyFee: 0.1
+
+    # The adapter which should be used for public API calls.
+    # All special config values for this adapter must be given in this otherConfig section as well.
+    # In this case, the otherConfig is for the Bitstamp exchange.
+    delegateAdapter: com.gazbert.bxbot.exchanges.BitstampExchangeAdapter
+

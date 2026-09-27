@@ -1,0 +1,355 @@
+/*
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2015 Gareth Jon Lynch
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+package com.gazbert.bxbot.core.engine;
+
+import com.gazbert.bxbot.core.config.exchange.ExchangeApiConfigBuilder;
+import com.gazbert.bxbot.core.config.exchange.ExchangeConfigImpl;
+import com.gazbert.bxbot.core.config.strategy.TradingStrategiesBuilder;
+import com.gazbert.bxbot.core.mail.EmailAlertMessageBuilder;
+import com.gazbert.bxbot.core.mail.EmailAlerter;
+import com.gazbert.bxbot.core.util.ConfigurableComponentFactory;
+import com.gazbert.bxbot.core.util.EmergencyStopChecker;
+import com.gazbert.bxbot.domain.engine.EngineConfig;
+import com.gazbert.bxbot.domain.exchange.ExchangeConfig;
+import com.gazbert.bxbot.domain.market.MarketConfig;
+import com.gazbert.bxbot.domain.strategy.StrategyConfig;
+import com.gazbert.bxbot.exchange.api.ExchangeAdapter;
+import com.gazbert.bxbot.services.config.EngineConfigService;
+import com.gazbert.bxbot.services.config.ExchangeConfigService;
+import com.gazbert.bxbot.services.config.MarketConfigService;
+import com.gazbert.bxbot.services.config.StrategyConfigService;
+import com.gazbert.bxbot.strategy.api.StrategyException;
+import com.gazbert.bxbot.strategy.api.TradingStrategy;
+import com.gazbert.bxbot.trading.api.ExchangeNetworkException;
+import com.gazbert.bxbot.trading.api.TradingApiException;
+import java.math.BigDecimal;
+import java.util.List;
+import lombok.extern.log4j.Log4j2;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.stereotype.Component;
+
+/**
+ * The main Trading Engine.
+ *
+ * <p>The engine has been coded to fail *hard and fast* whenever something unexpected happens. If
+ * Email Alerts are enabled, a message will be sent with details of the problem before the bot is
+ * shutdown.
+ *
+ * <p>The only time the bot does not fail hard and fast is for network issues connecting to the
+ * exchange - it logs the error and retries at next trade cycle.
+ *
+ * <p>To keep things simple:
+ *
+ * <ul>
+ *   <li>The engine is single threaded.
+ *   <li>The engine only supports trading on 1 exchange per instance of the bot, i.e. 1 Exchange
+ *       Adapter per process.
+ *   <li>The engine only supports 1 Trading Strategy per Market.
+ * </ul>
+ *
+ * @author gazbert
+ */
+@Component
+@ComponentScan(basePackages = {"com.gazbert.bxbot"})
+@Log4j2
+public class TradingEngine {
+
+  private static final String CRITICAL_EMAIL_ALERT_SUBJECT = "CRITICAL Alert message from BX-bot";
+  private static final String DETAILS_ERROR_MSG_LABEL = " Details: ";
+  private static final String CAUSE_ERROR_MSG_LABEL = " Cause: ";
+
+  private static final String THREAD_INTERRUPTED_WARN_MSG =
+      "Control Loop thread interrupted when sleeping before next trade cycle";
+
+  private static final Object IS_RUNNING_MONITOR = new Object();
+  private Thread engineThread;
+  private volatile boolean keepAlive = true;
+  private boolean isRunning = false;
+
+  private final EmailAlerter emailAlerter;
+  private List<TradingStrategy> tradingStrategies;
+  private EngineConfig engineConfig;
+  private ExchangeAdapter exchangeAdapter;
+
+  private final ExchangeConfigService exchangeConfigService;
+  private final EngineConfigService engineConfigService;
+  private final StrategyConfigService strategyConfigService;
+  private final MarketConfigService marketConfigService;
+
+  private final TradingStrategiesBuilder tradingStrategiesBuilder;
+  private final ConfigurableComponentFactory configurableComponentFactory;
+
+  /**
+   * Creates the Trading Engine.
+   *
+   * @param exchangeConfigService the Exchange config service.
+   * @param engineConfigService the Engine config service.
+   * @param strategyConfigService the Strategy config service.
+   * @param marketConfigService the Market config service.
+   * @param emailAlerter the Email Alerter.
+   * @param tradingStrategiesBuilder the Trading Strategies Builder.
+   * @param configurableComponentFactory the Configurable Component Factory.
+   */
+  @Autowired
+  public TradingEngine(
+      ExchangeConfigService exchangeConfigService,
+      EngineConfigService engineConfigService,
+      StrategyConfigService strategyConfigService,
+      MarketConfigService marketConfigService,
+      EmailAlerter emailAlerter,
+      TradingStrategiesBuilder tradingStrategiesBuilder,
+      ConfigurableComponentFactory configurableComponentFactory) {
+
+    this.exchangeConfigService = exchangeConfigService;
+    this.engineConfigService = engineConfigService;
+    this.strategyConfigService = strategyConfigService;
+    this.marketConfigService = marketConfigService;
+    this.emailAlerter = emailAlerter;
+    this.tradingStrategiesBuilder = tradingStrategiesBuilder;
+    this.configurableComponentFactory = configurableComponentFactory;
+  }
+
+  /** Starts the bot. */
+  public void start() {
+    synchronized (IS_RUNNING_MONITOR) {
+      if (isRunning) {
+        final String errorMsg = "Cannot start Trading Engine because it is already running!";
+        log.error(errorMsg);
+        throw new IllegalStateException(errorMsg);
+      }
+      isRunning = true;
+    }
+
+    // store this so we can shut down the engine later
+    engineThread = Thread.currentThread();
+
+    init();
+    runMainControlLoop();
+  }
+
+  private void init() {
+    log.info("Initialising Trading Engine...");
+    // the sequence order of these methods is significant - don't change it.
+    exchangeAdapter = loadExchangeAdapter();
+    engineConfig = loadEngineConfig();
+    tradingStrategies = loadTradingStrategies();
+  }
+
+  /*
+   * The main control loop.
+   * We loop infinitely unless an unexpected exception occurs.
+   * The code fails hard and fast if an unexpected occurs. Network exceptions *should* recover.
+   */
+  private void runMainControlLoop() {
+    log.info("Starting Trading Engine for {} ...", engineConfig.getBotId());
+    while (keepAlive) {
+      try {
+        log.info("*** Starting next trade cycle... ***");
+
+        // Emergency Stop Check MUST run at start of every trade cycle.
+        if (isEmergencyStopLimitBreached()) {
+          break;
+        }
+
+        for (final TradingStrategy tradingStrategy : tradingStrategies) {
+          log.info(
+              "Executing Trading Strategy ---> {}", tradingStrategy.getClass().getSimpleName());
+          tradingStrategy.execute();
+        }
+
+        sleepUntilNextTradingCycle();
+
+      } catch (ExchangeNetworkException e) {
+        handleExchangeNetworkException(e);
+
+      } catch (TradingApiException e) {
+        handleTradingApiException(e);
+
+      } catch (StrategyException e) {
+        handleStrategyException(e);
+
+      } catch (Exception e) {
+        handleUnexpectedException(e);
+      }
+    }
+
+    // We've broken out of the control loop due to error or admin shutdown request
+    log.fatal("BX-bot {} is shutting down NOW!", engineConfig.getBotId());
+    synchronized (IS_RUNNING_MONITOR) {
+      isRunning = false;
+    }
+  }
+
+  /*
+   * Shutdown the Trading Engine.
+   * Might be called from a different thread.
+   * Currently not used, but will eventually be called from BX-bot UI.
+   */
+  void shutdown() {
+    log.info("Shutdown request received!");
+    log.info("Engine originally started in thread: {}", engineThread);
+    keepAlive = false;
+    engineThread.interrupt(); // poke it in case bot is sleeping
+  }
+
+  synchronized boolean isRunning() {
+    log.info("isRunning: {}", isRunning);
+    return isRunning;
+  }
+
+  private void sleepUntilNextTradingCycle() {
+    log.info("*** Sleeping {}s til next trade cycle... ***", engineConfig.getTradeCycleInterval());
+    try {
+      Thread.sleep(engineConfig.getTradeCycleInterval() * 1000L);
+    } catch (InterruptedException e) {
+      log.warn(THREAD_INTERRUPTED_WARN_MSG);
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /*
+   * We have a network connection issue reported by Exchange Adapter when called directly from
+   * Trading Engine. Current policy is to log it and sleep until next trade cycle.
+   */
+  private void handleExchangeNetworkException(ExchangeNetworkException e) {
+    final String errorMessage =
+        "A network error has occurred in Exchange Adapter! "
+            + "BX-bot will try again in "
+            + engineConfig.getTradeCycleInterval()
+            + "s...";
+    log.error(errorMessage, e);
+
+    try {
+      Thread.sleep(engineConfig.getTradeCycleInterval() * 1000L);
+    } catch (InterruptedException e1) {
+      log.warn(THREAD_INTERRUPTED_WARN_MSG);
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /*
+   * A serious issue has occurred in the Exchange Adapter.
+   * Current policy is to log it, send email alert if required, and shutdown bot.
+   */
+  private void handleTradingApiException(TradingApiException e) {
+    final String fatalErrorMessage = "A FATAL error has occurred in Exchange Adapter!";
+    log.fatal(fatalErrorMessage, e);
+    emailAlerter.sendMessage(
+        CRITICAL_EMAIL_ALERT_SUBJECT,
+        EmailAlertMessageBuilder.buildCriticalMsgContent(
+            fatalErrorMessage
+                + DETAILS_ERROR_MSG_LABEL
+                + e.getMessage()
+                + CAUSE_ERROR_MSG_LABEL
+                + e.getCause(),
+            e,
+            engineConfig.getBotId(),
+            engineConfig.getBotName(),
+            exchangeAdapter.getClass().getName()));
+    keepAlive = false;
+  }
+
+  /*
+   * A serious issue has occurred in the Trading Strategy.
+   * Current policy is to log it, send email alert if required, and shutdown bot.
+   */
+  private void handleStrategyException(StrategyException e) {
+    final String fatalErrorMsg = "A FATAL error has occurred in Trading Strategy!";
+    log.fatal(fatalErrorMsg, e);
+    emailAlerter.sendMessage(
+        CRITICAL_EMAIL_ALERT_SUBJECT,
+        EmailAlertMessageBuilder.buildCriticalMsgContent(
+            fatalErrorMsg
+                + DETAILS_ERROR_MSG_LABEL
+                + e.getMessage()
+                + CAUSE_ERROR_MSG_LABEL
+                + e.getCause(),
+            e,
+            engineConfig.getBotId(),
+            engineConfig.getBotName(),
+            exchangeAdapter.getClass().getName()));
+    keepAlive = false;
+  }
+
+  /*
+   * A serious and *unexpected* issue has occurred in the Exchange Adapter or Trading
+   * Strategy. Current policy is to log it, send email alert if required, and shutdown bot.
+   */
+  private void handleUnexpectedException(Exception e) {
+    final String fatalErrorMsg =
+        "An unexpected FATAL error has occurred in Exchange Adapter or " + "Trading Strategy!";
+    log.fatal(fatalErrorMsg, e);
+    emailAlerter.sendMessage(
+        CRITICAL_EMAIL_ALERT_SUBJECT,
+        EmailAlertMessageBuilder.buildCriticalMsgContent(
+            fatalErrorMsg
+                + DETAILS_ERROR_MSG_LABEL
+                + e.getMessage()
+                + CAUSE_ERROR_MSG_LABEL
+                + e.getCause(),
+            e,
+            engineConfig.getBotId(),
+            engineConfig.getBotName(),
+            exchangeAdapter.getClass().getName()));
+    keepAlive = false;
+  }
+
+  private boolean isEmergencyStopLimitBreached()
+      throws TradingApiException, ExchangeNetworkException {
+    if (engineConfig.getEmergencyStopBalance().compareTo(BigDecimal.ZERO) == 0) {
+      return false; // by-pass the emergency stop check
+    }
+    return EmergencyStopChecker.isEmergencyStopLimitBreached(
+        exchangeAdapter, engineConfig, emailAlerter);
+  }
+
+  private ExchangeAdapter loadExchangeAdapter() {
+    final ExchangeConfig exchangeConfig = exchangeConfigService.getExchangeConfig();
+    log.info("Fetched Exchange config from repository: {}", exchangeConfig);
+
+    final ExchangeAdapter adapter =
+        configurableComponentFactory.createComponent(exchangeConfig.getAdapter());
+    log.info("Trading Engine will use Exchange Adapter for: {}", adapter.getImplName());
+
+    final ExchangeConfigImpl exchangeApiConfig =
+        ExchangeApiConfigBuilder.buildConfig(exchangeConfig);
+    adapter.init(exchangeApiConfig);
+    return adapter;
+  }
+
+  private EngineConfig loadEngineConfig() {
+    final EngineConfig loadedEngineConfig = engineConfigService.getEngineConfig();
+    log.info("Fetched Engine config from repository: {}", loadedEngineConfig);
+    return loadedEngineConfig;
+  }
+
+  private List<TradingStrategy> loadTradingStrategies() {
+    final List<StrategyConfig> strategies = strategyConfigService.getAllStrategyConfig();
+    log.info("Fetched Strategy config from repository: {}", strategies);
+    final List<MarketConfig> markets = marketConfigService.getAllMarketConfig();
+    log.info("Fetched Markets config from repository: {}", markets);
+    return tradingStrategiesBuilder.buildStrategies(strategies, markets, exchangeAdapter);
+  }
+}

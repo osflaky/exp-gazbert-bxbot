@@ -1,0 +1,165 @@
+/*
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2019 gazbert
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+package com.gazbert.bxbot.datastore.yaml;
+
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.Set;
+import java.util.TreeSet;
+import lombok.extern.log4j.Log4j2;
+import org.springframework.stereotype.Component;
+import org.yaml.snakeyaml.DumperOptions;
+import org.yaml.snakeyaml.LoaderOptions;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.Constructor;
+import org.yaml.snakeyaml.introspector.BeanAccess;
+import org.yaml.snakeyaml.introspector.Property;
+import org.yaml.snakeyaml.introspector.PropertyUtils;
+import org.yaml.snakeyaml.nodes.NodeTuple;
+import org.yaml.snakeyaml.nodes.Tag;
+import org.yaml.snakeyaml.representer.Representer;
+
+/**
+ * The generic configuration manager loads config from a given YAML config file.
+ *
+ * @author gazbert
+ */
+@Component
+@Log4j2
+public class ConfigurationManager {
+
+  private static final String YAML_HEADER = "---" + System.lineSeparator();
+
+  /** Creates the Configuration Manager. */
+  public ConfigurationManager() {
+    // No extra init needed.
+  }
+
+  /**
+   * Loads the config from the YAML file.
+   *
+   * @param configClass the config class.
+   * @param yamlConfigFile the YAML config filename.
+   * @param <T> the type of config.
+   * @return the loaded config.
+   */
+  public synchronized <T> T loadConfig(final Class<T> configClass, String yamlConfigFile) {
+
+    log.info("Loading configuration for [{}] from: {} ...", configClass, yamlConfigFile);
+
+    try (final FileInputStream fileInputStream = new FileInputStream(yamlConfigFile)) {
+
+      final LoaderOptions options = new LoaderOptions();
+      final Yaml yaml = new Yaml(new Constructor(configClass, options));
+      final T requestedConfig = yaml.load(fileInputStream);
+
+      log.info("Loaded and set configuration for [{}] successfully!", configClass);
+      return requestedConfig;
+
+    } catch (IOException e) {
+      final String errorMsg = "Failed to find or read [" + yamlConfigFile + "] config";
+      log.error(errorMsg, e);
+      throw new IllegalStateException(errorMsg, e);
+
+    } catch (Exception e) {
+      final String errorMsg =
+          "Failed to load [" + yamlConfigFile + "] file. Details: " + e.getMessage();
+      log.error(errorMsg, e);
+      throw new IllegalArgumentException(errorMsg, e);
+    }
+  }
+
+  /**
+   * Saves the config to the YAML file.
+   *
+   * @param configClass the config Class.
+   * @param config the config object to save.
+   * @param yamlConfigFile the YAML config filename.
+   * @param <T> the type of config.
+   */
+  public synchronized <T> void saveConfig(Class<T> configClass, T config, String yamlConfigFile) {
+
+    log.info("Saving configuration for [{}] to: {} ...", configClass, yamlConfigFile);
+
+    try (final FileOutputStream fileOutputStream = new FileOutputStream(yamlConfigFile);
+        final PrintWriter writer =
+            new PrintWriter(fileOutputStream, true, StandardCharsets.UTF_8)) {
+
+      // Skip null fields and order the YAML fields
+      final DumperOptions options = new DumperOptions();
+      final Representer representer = new SkipNullFieldRepresenter(options);
+      representer.setPropertyUtils(new ReversedPropertyUtils());
+      final Yaml yaml = new Yaml(representer);
+
+      final StringBuilder sb = new StringBuilder(YAML_HEADER);
+      sb.append(yaml.dumpAs(config, Tag.MAP, DumperOptions.FlowStyle.BLOCK));
+
+      log.debug("YAML file content:\n{}", sb);
+      writer.print(sb);
+
+    } catch (IOException e) {
+      final String errorMsg = "Failed to find or read [" + yamlConfigFile + "] config";
+      log.error(errorMsg, e);
+      throw new IllegalStateException(errorMsg, e);
+
+    } catch (Exception e) {
+      final String errorMsg =
+          "Failed to save config to [" + yamlConfigFile + "] file. Details: " + e.getMessage();
+      log.error(errorMsg, e);
+      throw new IllegalArgumentException(errorMsg, e);
+    }
+  }
+
+  /** Stops null fields from getting written out to YAML. */
+  private static class SkipNullFieldRepresenter extends Representer {
+
+    SkipNullFieldRepresenter(DumperOptions options) {
+      super(options);
+    }
+
+    @Override
+    protected NodeTuple representJavaBeanProperty(
+        Object javaBean, Property property, Object propertyValue, Tag customTag) {
+      if (propertyValue == null) {
+        return null;
+      } else {
+        return super.representJavaBeanProperty(javaBean, property, propertyValue, customTag);
+      }
+    }
+  }
+
+  /** Orders properties before dumping out YAML. */
+  private static class ReversedPropertyUtils extends PropertyUtils {
+    @Override
+    protected Set<Property> createPropertySet(Class<?> type, BeanAccess beanAccess) {
+      final Set<Property> result = new TreeSet<>(Collections.reverseOrder());
+      result.addAll(super.createPropertySet(type, beanAccess));
+      return result;
+    }
+  }
+}

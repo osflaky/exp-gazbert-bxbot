@@ -1,0 +1,145 @@
+/*
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2016 Gareth Jon Lynch
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+package com.gazbert.bxbot.rest.api.v1.config;
+
+import static com.gazbert.bxbot.rest.api.v1.EndpointLocations.CONFIG_ENDPOINT_BASE_URI;
+
+import com.gazbert.bxbot.domain.engine.EngineConfig;
+import com.gazbert.bxbot.rest.api.v1.RestController;
+import com.gazbert.bxbot.services.config.EngineConfigService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import java.security.Principal;
+import lombok.extern.log4j.Log4j2;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+/**
+ * Controller for directing Engine config requests.
+ *
+ * <p>Engine config can only be fetched and updated - it cannot be deleted or created.
+ *
+ * <p>There is only 1 Trading Engine per bot.
+ *
+ * @author gazbert
+ * @since 1.0
+ */
+@org.springframework.web.bind.annotation.RestController
+@RequestMapping(CONFIG_ENDPOINT_BASE_URI)
+@Tag(name = "Engine Configuration")
+@Log4j2
+public class EngineConfigController extends RestController {
+
+  private static final String ENGINE_RESOURCE_PATH = "/engine";
+  private final EngineConfigService engineConfigService;
+
+  /**
+   * Creates the EngineConfigController.
+   *
+   * @param engineConfigService the engine config service.
+   */
+  @Autowired
+  public EngineConfigController(EngineConfigService engineConfigService) {
+    this.engineConfigService = engineConfigService;
+  }
+
+  /**
+   * Returns the Engine configuration for the bot.
+   *
+   * @param principal the authenticated user making the request.
+   * @return the Engine configuration.
+   */
+  @PreAuthorize("hasRole('USER')")
+  @GetMapping(value = ENGINE_RESOURCE_PATH)
+  @Operation(summary = "Fetches Engine config")
+  @ApiResponses(
+      value = {
+        @ApiResponse(
+            responseCode = "200",
+            description = "OK",
+            content = @Content(schema = @Schema(implementation = EngineConfig.class))),
+        @ApiResponse(
+            responseCode = "400",
+            description = "Bad Request",
+            content = @Content(schema = @Schema(implementation = String.class)))
+      })
+  public EngineConfig getEngine(@Parameter(hidden = true) Principal principal) {
+
+    log.info("GET " + ENGINE_RESOURCE_PATH + " - getEngine() - caller: {}", principal.getName());
+
+    final EngineConfig engineConfig = engineConfigService.getEngineConfig();
+    log.info("Response: {}", engineConfig);
+    return engineConfig;
+  }
+
+  /**
+   * Updates the Engine configuration for the bot.
+   *
+   * @param principal the authenticated user making the request.
+   * @param config the Engine config to update.
+   * @return 200 'OK' HTTP status code and updated Engine config in the response body if update
+   *     successful, some other HTTP status code otherwise.
+   */
+  @PreAuthorize("hasRole('ADMIN')")
+  @PutMapping(value = ENGINE_RESOURCE_PATH)
+  @Operation(summary = "Updates Engine config")
+  @ApiResponses(
+      value = {
+        @ApiResponse(
+            responseCode = "200",
+            description = "OK",
+            content = @Content(schema = @Schema(implementation = EngineConfig.class))),
+        @ApiResponse(
+            responseCode = "400",
+            description = "Bad Request",
+            content = @Content(schema = @Schema(implementation = String.class)))
+      })
+  public ResponseEntity<EngineConfig> updateEngine(
+      @Parameter(hidden = true) Principal principal, @Valid @RequestBody EngineConfig config) {
+
+    log.info("PUT " + ENGINE_RESOURCE_PATH + " - updateEngine() - caller: {}", principal.getName());
+
+    log.info("Request: {}", config);
+
+    final EngineConfig updatedConfig = engineConfigService.updateEngineConfig(config);
+    return buildResponseEntity(updatedConfig);
+  }
+
+  private ResponseEntity<EngineConfig> buildResponseEntity(EngineConfig entity) {
+    log.info("Response: {}", entity);
+    return new ResponseEntity<>(entity, null, HttpStatus.OK);
+  }
+}
